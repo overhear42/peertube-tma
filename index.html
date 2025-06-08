@@ -388,73 +388,163 @@
             }
         }
 
-        // Play video
+        // Debug function to show video details
+        function showDebugInfo(video) {
+            const debugInfo = {
+                'Video UUID': video.uuid,
+                'Files count': video.files ? video.files.length : 0,
+                'Streaming playlists': video.streamingPlaylists ? video.streamingPlaylists.length : 0,
+                'Files': video.files ? video.files.map(f => ({
+                    resolution: f.resolution?.label,
+                    fileUrl: f.fileUrl,
+                    fileDownloadUrl: f.fileDownloadUrl
+                })) : [],
+                'Streaming URLs': video.streamingPlaylists ? video.streamingPlaylists.map(p => p.playlistUrl) : []
+            };
+            
+            console.log('=== DEBUG VIDEO INFO ===');
+            console.log(JSON.stringify(debugInfo, null, 2));
+            console.log('=== FULL VIDEO OBJECT ===');
+            console.log(video);
+            
+            // Show debug in alert too
+            const debugText = `Debug Info:\nFiles: ${debugInfo['Files count']}\nStreaming: ${debugInfo['Streaming playlists']}\nFirst file URL: ${debugInfo.Files[0]?.fileUrl || 'None'}`;
+            window.Telegram.WebApp.showAlert(debugText);
+        }
+
+        // Play video with multiple fallback methods
         async function playVideo(videoUuid, title) {
             try {
+                console.log('=== STARTING VIDEO PLAYBACK ===');
+                console.log('Video UUID:', videoUuid);
+                console.log('Video Title:', title);
+                
                 // Get video details with streaming URLs
                 const response = await fetch(`${API_BASE}/videos/${videoUuid}`);
+                if (!response.ok) {
+                    throw new Error(`API request failed: ${response.status}`);
+                }
+                
                 const video = await response.json();
                 
-                console.log('Video data:', video); // Debug log
+                // Show debug info
+                showDebugInfo(video);
                 
-                // Try multiple methods to get video URL
                 let videoUrl = null;
+                let playbackMethod = 'none';
                 
-                // Method 1: Check streamingPlaylists for HLS
-                if (video.streamingPlaylists && video.streamingPlaylists.length > 0) {
+                // Method 1: Try iframe embed (most reliable)
+                if (!videoUrl) {
+                    const embedUrl = `${PEERTUBE_INSTANCE}/videos/embed/${videoUuid}`;
+                    console.log('Trying embed method:', embedUrl);
+                    
+                    // Replace video element with iframe for embed
+                    const iframe = document.createElement('iframe');
+                    iframe.src = embedUrl;
+                    iframe.style.width = '100%';
+                    iframe.style.height = '100%';
+                    iframe.style.border = 'none';
+                    iframe.allowFullscreen = true;
+                    
+                    const videoContainer = videoElement.parentNode;
+                    videoContainer.appendChild(iframe);
+                    videoElement.style.display = 'none';
+                    
+                    playerTitle.textContent = title;
+                    videoPlayer.style.display = 'block';
+                    playbackMethod = 'embed';
+                    
+                    console.log('Using embed method');
+                    return;
+                }
+                
+                // Method 2: Direct file URLs
+                if (video.files && video.files.length > 0) {
+                    console.log('Available files:', video.files);
+                    
+                    // Try each file until one works
+                    for (const file of video.files) {
+                        if (file.fileUrl) {
+                            videoUrl = file.fileUrl;
+                            playbackMethod = 'direct-fileUrl';
+                            break;
+                        } else if (file.fileDownloadUrl) {
+                            videoUrl = file.fileDownloadUrl;
+                            playbackMethod = 'direct-download';
+                            break;
+                        }
+                    }
+                }
+                
+                // Method 3: HLS streaming
+                if (!videoUrl && video.streamingPlaylists && video.streamingPlaylists.length > 0) {
                     const playlist = video.streamingPlaylists[0];
                     if (playlist.playlistUrl) {
                         videoUrl = playlist.playlistUrl;
-                        // For HLS streams, we need to handle differently
-                        playerTitle.textContent = title;
-                        videoElement.src = videoUrl;
-                        videoPlayer.style.display = 'block';
-                        return;
+                        playbackMethod = 'hls';
                     }
                 }
                 
-                // Method 2: Check files array
-                if (video.files && video.files.length > 0) {
-                    // Sort by resolution, prefer higher quality
-                    const sortedFiles = video.files.sort((a, b) => (b.resolution?.id || 0) - (a.resolution?.id || 0));
-                    const bestFile = sortedFiles[0];
-                    
-                    if (bestFile.fileUrl) {
-                        videoUrl = bestFile.fileUrl;
-                    } else if (bestFile.fileDownloadUrl) {
-                        videoUrl = bestFile.fileDownloadUrl;
-                    }
-                }
-                
-                // Method 3: Construct URL manually
+                // Method 4: Try standard PeerTube paths
                 if (!videoUrl) {
-                    // Try to construct the video URL based on PeerTube patterns
-                    videoUrl = `${PEERTUBE_INSTANCE}/static/webseed/${videoUuid}-480.mp4`;
+                    const resolutions = ['480', '720', '360', '240'];
+                    for (const res of resolutions) {
+                        const testUrl = `${PEERTUBE_INSTANCE}/static/webseed/${videoUuid}-${res}.mp4`;
+                        console.log('Trying constructed URL:', testUrl);
+                        
+                        // Test if URL exists
+                        try {
+                            const testResponse = await fetch(testUrl, { method: 'HEAD' });
+                            if (testResponse.ok) {
+                                videoUrl = testUrl;
+                                playbackMethod = 'constructed';
+                                break;
+                            }
+                        } catch (e) {
+                            console.log('URL test failed:', testUrl, e.message);
+                        }
+                    }
                 }
                 
                 if (videoUrl) {
-                    console.log('Playing video URL:', videoUrl); // Debug log
+                    console.log('=== PLAYING VIDEO ===');
+                    console.log('Method:', playbackMethod);
+                    console.log('URL:', videoUrl);
+                    
                     playerTitle.textContent = title;
                     videoElement.src = videoUrl;
                     videoPlayer.style.display = 'block';
                     
-                    // Add error handler for video element
+                    // Enhanced error handling
                     videoElement.onerror = function() {
-                        console.error('Video element error:', videoElement.error);
-                        window.Telegram.WebApp.showAlert('Video format not supported');
+                        console.error('=== VIDEO ELEMENT ERROR ===');
+                        console.error('Error code:', videoElement.error?.code);
+                        console.error('Error message:', videoElement.error?.message);
+                        console.error('Current src:', videoElement.src);
+                        
+                        window.Telegram.WebApp.showAlert(`Video error (${playbackMethod}): ${videoElement.error?.message || 'Unknown error'}`);
                         closePlayer();
                     };
                     
-                    videoElement.play().catch(error => {
-                        console.error('Play error:', error);
-                        window.Telegram.WebApp.showAlert('Failed to play video');
-                    });
+                    videoElement.onloadstart = () => console.log('Video load started');
+                    videoElement.oncanplay = () => console.log('Video can play');
+                    videoElement.onplaying = () => console.log('Video is playing');
+                    
+                    try {
+                        await videoElement.play();
+                        console.log('Video play() succeeded');
+                    } catch (error) {
+                        console.error('Video play() failed:', error);
+                        window.Telegram.WebApp.showAlert(`Play failed (${playbackMethod}): ${error.message}`);
+                    }
                 } else {
-                    window.Telegram.WebApp.showAlert('Video URL not found');
+                    console.error('=== NO VIDEO URL FOUND ===');
+                    window.Telegram.WebApp.showAlert('No playable video URL found. Check console for debug info.');
                 }
             } catch (error) {
-                console.error('Error playing video:', error);
-                window.Telegram.WebApp.showAlert('Failed to load video: ' + error.message);
+                console.error('=== PLAYBACK ERROR ===');
+                console.error('Error:', error);
+                window.Telegram.WebApp.showAlert('Playback error: ' + error.message);
             }
         }
 
@@ -463,6 +553,13 @@
             videoPlayer.style.display = 'none';
             videoElement.pause();
             videoElement.src = '';
+            
+            // Remove any iframe that might have been added
+            const iframe = videoPlayer.querySelector('iframe');
+            if (iframe) {
+                iframe.remove();
+                videoElement.style.display = 'block';
+            }
         }
 
         // Search functionality
