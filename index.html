@@ -180,29 +180,6 @@
         .video-element {
             width: 100%;
             height: calc(100% - 60px);
-            background: #000;
-        }
-
-        .fallback-message {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            text-align: center;
-            color: #fff;
-            font-size: 16px;
-        }
-
-        .open-browser-btn {
-            background: #00d4ff;
-            color: #000;
-            border: none;
-            padding: 12px 24px;
-            border-radius: 8px;
-            font-size: 16px;
-            font-weight: 600;
-            cursor: pointer;
-            margin-top: 16px;
         }
 
         .loading {
@@ -414,79 +391,70 @@
         // Play video
         async function playVideo(videoUuid, title) {
             try {
-                playerTitle.textContent = title;
-                videoPlayer.style.display = 'block';
-                
-                // Try different video URL approaches
-                const videoUrls = [
-                    `${PEERTUBE_INSTANCE}/videos/watch/${videoUuid}`,
-                    `${PEERTUBE_INSTANCE}/static/webseed/${videoUuid}-720.mp4`,
-                    `${PEERTUBE_INSTANCE}/static/webseed/${videoUuid}-480.mp4`,
-                    `${PEERTUBE_INSTANCE}/static/webseed/${videoUuid}-360.mp4`
-                ];
-                
-                // Get video details
+                // Get video details with streaming URLs
                 const response = await fetch(`${API_BASE}/videos/${videoUuid}`);
                 const video = await response.json();
                 
-                // Try to find working video URL
-                let videoLoaded = false;
+                console.log('Video data:', video); // Debug log
                 
-                // First try the files from API
+                // Try multiple methods to get video URL
+                let videoUrl = null;
+                
+                // Method 1: Check streamingPlaylists for HLS
+                if (video.streamingPlaylists && video.streamingPlaylists.length > 0) {
+                    const playlist = video.streamingPlaylists[0];
+                    if (playlist.playlistUrl) {
+                        videoUrl = playlist.playlistUrl;
+                        // For HLS streams, we need to handle differently
+                        playerTitle.textContent = title;
+                        videoElement.src = videoUrl;
+                        videoPlayer.style.display = 'block';
+                        return;
+                    }
+                }
+                
+                // Method 2: Check files array
                 if (video.files && video.files.length > 0) {
-                    for (const file of video.files) {
-                        if (file.fileUrl) {
-                            try {
-                                videoElement.src = file.fileUrl;
-                                await new Promise((resolve, reject) => {
-                                    videoElement.onloadeddata = resolve;
-                                    videoElement.onerror = reject;
-                                    setTimeout(reject, 3000); // 3 second timeout
-                                });
-                                videoLoaded = true;
-                                break;
-                            } catch (e) {
-                                console.log('Failed to load:', file.fileUrl);
-                            }
-                        }
+                    // Sort by resolution, prefer higher quality
+                    const sortedFiles = video.files.sort((a, b) => (b.resolution?.id || 0) - (a.resolution?.id || 0));
+                    const bestFile = sortedFiles[0];
+                    
+                    if (bestFile.fileUrl) {
+                        videoUrl = bestFile.fileUrl;
+                    } else if (bestFile.fileDownloadUrl) {
+                        videoUrl = bestFile.fileDownloadUrl;
                     }
                 }
                 
-                // If API files don't work, try constructed URLs
-                if (!videoLoaded) {
-                    for (const url of videoUrls) {
-                        try {
-                            videoElement.src = url;
-                            await new Promise((resolve, reject) => {
-                                videoElement.onloadeddata = resolve;
-                                videoElement.onerror = reject;
-                                setTimeout(reject, 2000); // 2 second timeout
-                            });
-                            videoLoaded = true;
-                            break;
-                        } catch (e) {
-                            console.log('Failed to load:', url);
-                        }
-                    }
+                // Method 3: Construct URL manually
+                if (!videoUrl) {
+                    // Try to construct the video URL based on PeerTube patterns
+                    videoUrl = `${PEERTUBE_INSTANCE}/static/webseed/${videoUuid}-480.mp4`;
                 }
                 
-                if (videoLoaded) {
-                    videoElement.play().catch(e => {
-                        console.log('Autoplay failed, user interaction required');
+                if (videoUrl) {
+                    console.log('Playing video URL:', videoUrl); // Debug log
+                    playerTitle.textContent = title;
+                    videoElement.src = videoUrl;
+                    videoPlayer.style.display = 'block';
+                    
+                    // Add error handler for video element
+                    videoElement.onerror = function() {
+                        console.error('Video element error:', videoElement.error);
+                        window.Telegram.WebApp.showAlert('Video format not supported');
+                        closePlayer();
+                    };
+                    
+                    videoElement.play().catch(error => {
+                        console.error('Play error:', error);
+                        window.Telegram.WebApp.showAlert('Failed to play video');
                     });
                 } else {
-                    // Fallback: Open in new tab/browser
-                    const watchUrl = `${PEERTUBE_INSTANCE}/videos/watch/${videoUuid}`;
-                    window.Telegram.WebApp.openLink(watchUrl);
-                    closePlayer();
+                    window.Telegram.WebApp.showAlert('Video URL not found');
                 }
-                
             } catch (error) {
                 console.error('Error playing video:', error);
-                // Fallback: Open in browser
-                const watchUrl = `${PEERTUBE_INSTANCE}/videos/watch/${videoUuid}`;
-                window.Telegram.WebApp.openLink(watchUrl);
-                closePlayer();
+                window.Telegram.WebApp.showAlert('Failed to load video: ' + error.message);
             }
         }
 
